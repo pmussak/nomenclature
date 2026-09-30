@@ -628,14 +628,12 @@ class RegionProcessor(Processor):
         processed_dfs: list[IamDataFrame] = []
 
         for model in df.model:
-            model_df = df.filter(model=model)
-
             # if no mapping is defined the data frame is returned unchanged
             if model not in self.mappings:
                 logger.info(
                     f"Skipping region aggregation for model '{model}' (no region processing mapping)"
                 )
-                processed_dfs.append(model_df)
+                processed_dfs.append(df.filter(model=model))
 
             # otherwise we first rename, then aggregate
             else:
@@ -643,9 +641,13 @@ class RegionProcessor(Processor):
                 logger.info(
                     f"Applying region-processing for model '{model}' from '{file}'"
                 )
+                # avoid a copy of the (potentially large) data for a single model
+                model_df = df if len(df.model) == 1 else df.filter(model=model)
                 processed_dfs.append(self._apply_region_processing(model_df)[0])
 
-        res = pyam.concat(processed_dfs)
+        res = (
+            processed_dfs[0] if len(processed_dfs) == 1 else pyam.concat(processed_dfs)
+        )
         if not_defined_regions := self.region_codelist.validate_items(res.region):
             raise UnknownRegionError(not_defined_regions)
 
@@ -961,17 +963,18 @@ def _compare_and_merge(
 ) -> tuple[IamDataFrame, pd.DataFrame]:
     """Compare and merge original and aggregated results"""
 
-    # Compare aggregated (processed) and original data at the common-region level
-    compare = pd.merge(
-        left=original.rename(index="original"),
-        right=aggregated.rename(index="aggregated"),
-        how="outer",
-        left_index=True,
-        right_index=True,
-    )
-
-    # Drop rows that are not in conflict
-    compare = compare.dropna()
+    # Compare aggregated (processed) and original data at the common-region level,
+    # use the position of each aggregated row in the original data (-1 if missing)
+    # to avoid an outer join of the (large) aggregated data
+    position = original.index.get_indexer(aggregated.index)
+    overlap = position >= 0
+    compare = pd.DataFrame(
+        {
+            "original": original.values[position[overlap]],
+            "aggregated": aggregated.values[overlap],
+        },
+        index=aggregated.index[overlap],
+    ).dropna()
     difference = compare[
         ~np.isclose(compare["original"], compare["aggregated"], rtol=rtol)
     ]
@@ -998,8 +1001,7 @@ def _compare_and_merge(
             "dataframe or file."
         )
     # Merge aggregated data onto original common-region data
-    index = aggregated.index.difference(original.index)
-    return pd.concat([original, aggregated[index]]), difference
+    return pd.concat([original, aggregated[~overlap]]), difference
 
 
 def _check_exclude_region_overlap(
