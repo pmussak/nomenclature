@@ -856,6 +856,10 @@ def aggregate_region_with_variable_rules(
     aggregated_data = []
     regions = [target_region, constituent_regions]
 
+    # downselect to the relevant regions once instead of for every aggregation
+    with adjust_log_level("pyam.core"):
+        df = df.filter(region=[target_region, *constituent_regions])
+
     # Simple aggregation (default sum)
     simple_vars = [var for var in variable_codelist.vars_default_agg_args(df.variable)]
     if simple_vars:
